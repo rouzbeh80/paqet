@@ -13,6 +13,13 @@ import (
 
 type RecvHandle struct {
 	handle *pcap.Handle
+	parser *gopacket.DecodingLayerParser
+	eth    *layers.Ethernet
+	ipv4   *layers.IPv4
+	ipv6   *layers.IPv6
+	tcp    *layers.TCP
+	udp    *layers.UDP
+	decoded []gopacket.LayerType
 }
 
 func NewRecvHandle(cfg *conf.Network) (*RecvHandle, error) {
@@ -33,7 +40,20 @@ func NewRecvHandle(cfg *conf.Network) (*RecvHandle, error) {
 		return nil, fmt.Errorf("failed to set BPF filter: %w", err)
 	}
 
-	return &RecvHandle{handle: handle}, nil
+	h := &RecvHandle{
+		handle: handle,
+		eth:    &layers.Ethernet{},
+		ipv4:   &layers.IPv4{},
+		ipv6:   &layers.IPv6{},
+		tcp:    &layers.TCP{},
+		udp:    &layers.UDP{},
+		decoded: make([]gopacket.LayerType, 0, 4),
+	}
+	h.parser = gopacket.NewDecodingLayerParser(layers.LayerTypeEthernet, h.eth, h.ipv4, h.ipv6, h.tcp, h.udp)
+	// Optimize parser to not copy payload
+	// h.parser.IgnoreUnsupported = true // Optional: ignore unknown layers
+
+	return h, nil
 }
 
 func (h *RecvHandle) Read() ([]byte, net.Addr, error) {
@@ -42,36 +62,64 @@ func (h *RecvHandle) Read() ([]byte, net.Addr, error) {
 		return nil, nil, err
 	}
 
+	// Reset decoded layers
+	// Note: We don't need to clear the structs themselves, DecodingLayerParser overwrites fields
+	err = h.parser.DecodeLayers(data, &h.decoded)
+	if err != nil {
+		// We might get an error if the packet is truncated or has layers we don't support,
+		// but we might still have decoded what we need.
+		// However, for critical path, if we don't get TCP/UDP, we skip.
+	}
+
 	addr := &net.UDPAddr{}
-	p := gopacket.NewPacket(data, layers.LayerTypeEthernet, gopacket.NoCopy)
+	var payload []byte
 
-	netLayer := p.NetworkLayer()
-	if netLayer == nil {
+	// Iterate over decoded layers to find Network and Transport layers
+	// This is faster than map lookup or type assertions on interfaces if we know the order,
+	// checking flags is efficient.
+	
+	// We only care if we found TCP or UDP (which implies IP was found if we are strictly parsing)
+	// But let's check what we have.
+	
+	hasIPv4 := false
+	hasIPv6 := false
+	hasTCP := false
+	hasUDP := false
+
+	for _, layerType := range h.decoded {
+		switch layerType {
+		case layers.LayerTypeIPv4:
+			hasIPv4 = true
+		case layers.LayerTypeIPv6:
+			hasIPv6 = true
+		case layers.LayerTypeTCP:
+			hasTCP = true
+		case layers.LayerTypeUDP:
+			hasUDP = true
+		}
+	}
+
+	if hasIPv4 {
+		addr.IP = h.ipv4.SrcIP
+	} else if hasIPv6 {
+		addr.IP = h.ipv6.SrcIP
+	}
+
+	if hasTCP {
+		addr.Port = int(h.tcp.SrcPort)
+		payload = h.tcp.Payload
+	} else if hasUDP {
+		addr.Port = int(h.udp.SrcPort)
+		payload = h.udp.Payload
+	} else {
+		// No transport layer found
 		return nil, addr, nil
 	}
-	switch netLayer.LayerType() {
-	case layers.LayerTypeIPv4:
-		addr.IP = netLayer.(*layers.IPv4).SrcIP
-	case layers.LayerTypeIPv6:
-		addr.IP = netLayer.(*layers.IPv6).SrcIP
-	}
 
-	trLayer := p.TransportLayer()
-	if trLayer == nil {
-		return nil, addr, nil
-	}
-	switch trLayer.LayerType() {
-	case layers.LayerTypeTCP:
-		addr.Port = int(trLayer.(*layers.TCP).SrcPort)
-	case layers.LayerTypeUDP:
-		addr.Port = int(trLayer.(*layers.UDP).SrcPort)
-	}
-
-	appLayer := p.ApplicationLayer()
-	if appLayer == nil {
-		return nil, addr, nil
-	}
-	return appLayer.Payload(), addr, nil
+	// If we didn't find an IP layer but found transport (unlikely with this parser stack starting at Ethernet),
+	// we still return what we have, but addr.IP will be nil/empty.
+	
+	return payload, addr, nil
 }
 
 func (h *RecvHandle) Close() {
