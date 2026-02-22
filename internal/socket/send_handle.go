@@ -195,6 +195,11 @@ func (h *SendHandle) buildTCPHeader(dstPort uint16, f conf.TCPF) *layers.TCP {
 			tcp.Ack = tcp.Seq + 1
 		}
 	} else {
+		tcp.Options = []layers.TCPOption{
+			{OptionType: layers.TCPOptionKindNop},
+			{OptionType: layers.TCPOptionKindNop},
+			{OptionType: layers.TCPOptionKindTimestamps, OptionLength: 10, OptionData: make([]byte, 8)},
+		}
 		tsEcr := tsVal - (counter%200 + 50)
 		binary.BigEndian.PutUint32(h.tcp.ackOptions[2].OptionData[0:4], tsVal)
 		binary.BigEndian.PutUint32(h.tcp.ackOptions[2].OptionData[4:8], tsEcr)
