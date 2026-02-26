@@ -11,7 +11,7 @@
 
 ## How It Works
 
-`paqet` captures packets using `pcap` and injects crafted TCP packets containing encrypted transport data. KCP provides reliable, encrypted communication optimized for high-loss networks using aggressive retransmission, forward error correction, and symmetric encryption.
+`paqet` captures packets using `PF_RING` and injects crafted TCP packets containing encrypted transport data. KCP provides reliable, encrypted communication optimized for high-loss networks using aggressive retransmission, forward error correction, and symmetric encryption.
 
 ```
 [Your App] <------> [paqet Client] <===== Raw TCP Packet =====> [paqet Server] <------> [Target Server]
@@ -24,10 +24,9 @@
 
 ### Prerequisites
 
-- `libpcap` development libraries must be installed on both the client and server machines.
-  - **Linux:** No prerequisites - binaries are statically linked.
-  - **macOS:** Comes pre-installed with Xcode Command Line Tools. Install with `xcode-select --install`
-  - **Windows:** Install Npcap. Download from [npcap.com](https://npcap.com/).
+- `PF_RING` must be installed on both the client and server machines.
+  - **Linux:** Install PF_RING kernel/user-space packages and ensure `libpfring` is available at build/runtime.
+  - **macOS/Windows:** Not supported in PF_RING mode.
 
 ### 1. Download a Release
 
@@ -242,7 +241,7 @@ The `network.tcp.local_flag` and `network.tcp.remote_flag` arrays cycle through 
 
 # Architecture & Security Model
 
-### The `pcap` Approach and Firewall Bypass
+### The `PF_RING` Approach and Firewall Bypass
 
 Understanding why standard firewalls are bypassed is key to using this tool securely.
 
@@ -263,14 +262,14 @@ A normal application uses the OS's TCP/IP stack. When a packet arrives, it trave
       +------------------------+
 ```
 
-`paqet` uses `pcap` to hook in at a much lower level. It requests a copy of every packet directly from the network driver, before the main OS TCP/IP stack and firewall get to process it.
+`paqet` uses `PF_RING` to hook in at a much lower level. It requests a copy of every packet directly from the network driver, before the main OS TCP/IP stack and firewall get to process it.
 
 ```
       +------------------------+
       |    paqet Application   |  <-- Gets a packet copy immediately
       +------------------------+
               ^       \
- (pcap copy) /         \  (Original packet continues up)
+ (PF_RING copy) /       \  (Original packet continues up)
             /           v
       +------------------------+
       |     OS TCP/IP Stack    |  <-- Firewall drops the original packet,
@@ -300,7 +299,7 @@ This means a rule like `ufw deny <PORT>` will have no effect on the proxy's oper
 
 This work draws inspiration from the research and implementation in the [gfw_resist_tcp_proxy](https://github.com/GFW-knocker/gfw_resist_tcp_proxy) project by GFW-knocker, which explored the use of raw sockets to circumvent certain forms of network filtering. This project serves as a Go-based exploration of those concepts.
 
-- Uses [pcap](https://github.com/the-tcpdump-group/libpcap) for low-level packet capture and injection
+- Uses [PF_RING](https://www.ntop.org/products/packet-capture/pf_ring/) for low-level packet capture and injection
 - Uses [gopacket](https://github.com/gopacket/gopacket) for raw packet crafting and decoding
 - Uses [kcp-go](https://github.com/xtaci/kcp-go) for reliable transport with encryption
 - Uses [smux](https://github.com/xtaci/smux) for connection multiplexing

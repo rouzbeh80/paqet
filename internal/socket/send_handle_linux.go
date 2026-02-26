@@ -1,3 +1,5 @@
+//go:build linux
+
 package socket
 
 import (
@@ -7,14 +9,13 @@ import (
 	"paqet/internal/conf"
 	"paqet/internal/pkg/hash"
 	"paqet/internal/pkg/iterator"
-	"runtime"
 	"sync"
 	"sync/atomic"
 	"time"
 
 	"github.com/gopacket/gopacket"
 	"github.com/gopacket/gopacket/layers"
-	"github.com/gopacket/gopacket/pcap"
+	"github.com/gopacket/gopacket/pfring"
 )
 
 type TCPF struct {
@@ -24,7 +25,7 @@ type TCPF struct {
 }
 
 type SendHandle struct {
-	handle      *pcap.Handle
+	handle      *pfring.Ring
 	srcIPv4     net.IP
 	srcIPv4RHWA net.HardwareAddr
 	srcIPv6     net.IP
@@ -43,14 +44,19 @@ type SendHandle struct {
 func NewSendHandle(cfg *conf.Network) (*SendHandle, error) {
 	handle, err := newHandle(cfg)
 	if err != nil {
-		return nil, fmt.Errorf("failed to open pcap handle: %w", err)
+		return nil, fmt.Errorf("failed to open PF_RING handle: %w", err)
 	}
-
-	// SetDirection is not fully supported on Windows Npcap, so skip it
-	if runtime.GOOS != "windows" {
-		if err := handle.SetDirection(pcap.DirectionOut); err != nil {
-			return nil, fmt.Errorf("failed to set pcap direction out: %v", err)
-		}
+	if err := handle.SetSocketMode(pfring.WriteOnly); err != nil {
+		handle.Close()
+		return nil, fmt.Errorf("failed to set PF_RING socket mode to write-only: %v", err)
+	}
+	if err := handle.SetDirection(pfring.TransmitOnly); err != nil {
+		handle.Close()
+		return nil, fmt.Errorf("failed to set PF_RING direction out: %v", err)
+	}
+	if err := handle.Enable(); err != nil {
+		handle.Close()
+		return nil, fmt.Errorf("failed to enable PF_RING send handle: %w", err)
 	}
 
 	sh := &SendHandle{

@@ -1,36 +1,43 @@
+//go:build linux
+
 package socket
 
 import (
 	"fmt"
 	"net"
 	"paqet/internal/conf"
-	"runtime"
 
 	"github.com/gopacket/gopacket"
 	"github.com/gopacket/gopacket/layers"
-	"github.com/gopacket/gopacket/pcap"
+	"github.com/gopacket/gopacket/pfring"
 )
 
 type RecvHandle struct {
-	handle *pcap.Handle
+	handle *pfring.Ring
 }
 
 func NewRecvHandle(cfg *conf.Network) (*RecvHandle, error) {
 	handle, err := newHandle(cfg)
 	if err != nil {
-		return nil, fmt.Errorf("failed to open pcap handle: %w", err)
+		return nil, fmt.Errorf("failed to open PF_RING handle: %w", err)
 	}
-
-	// SetDirection is not fully supported on Windows Npcap, so skip it
-	if runtime.GOOS != "windows" {
-		if err := handle.SetDirection(pcap.DirectionIn); err != nil {
-			return nil, fmt.Errorf("failed to set pcap direction in: %v", err)
-		}
+	if err := handle.SetSocketMode(pfring.ReadOnly); err != nil {
+		handle.Close()
+		return nil, fmt.Errorf("failed to set PF_RING socket mode to read-only: %v", err)
+	}
+	if err := handle.SetDirection(pfring.ReceiveOnly); err != nil {
+		handle.Close()
+		return nil, fmt.Errorf("failed to set PF_RING direction in: %v", err)
 	}
 
 	filter := fmt.Sprintf("tcp and dst port %d", cfg.Port)
 	if err := handle.SetBPFFilter(filter); err != nil {
+		handle.Close()
 		return nil, fmt.Errorf("failed to set BPF filter: %w", err)
+	}
+	if err := handle.Enable(); err != nil {
+		handle.Close()
+		return nil, fmt.Errorf("failed to enable PF_RING receive handle: %w", err)
 	}
 
 	return &RecvHandle{handle: handle}, nil
